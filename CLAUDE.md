@@ -47,7 +47,7 @@ MESSAGE
 ### Key files in this repo
 
 - **`core/seed.py`** — The one unit that crosses every layer. 120-bit payload (15 bytes) + `model_id` + `epoch` (16-bit on wire). Wire format: `[1 ver | 2 epoch_lo | 1 model_len] + model_id + payload + CRC-16/CCITT-FALSE`. The CRC family is the same as BE2's `udp_mesh_spec`, so a seed validated here validates there. `seed_from_message` is a reference fold (SHA-256 of `message + model_id + epoch`, first 15 bytes) so the repo runs end-to-end on stdlib alone — in real deployment the fold comes from `geometric-to-binary-computational-bridge`.
-- **`core/expander.py`** — `Expander` abstract base. Any deterministic shared-physics model that can unfold a seed implements this interface.
+- **`core/expander.py`** — `Expander` ABC. Subclasses set `model_id` and implement `expand(seed, steps) -> List[float]`. Determinism is the hard contract: same seed + same model params + same epoch → identical output on any machine with no further communication. `keystream(seed, n_bytes)` is provided free: folds the float schedule into bytes (`int(abs(v) * 1e6) & 0xFF`) so any expander doubles as a physics-keyed pad. `accepts(seed)` checks `seed.model_id == self.model_id`.
 - **`expanders/orbital.py`** — Thin reference adapter to the orbital-phycom principle (prime-harmonic Kepler phase). Real engine lives in orbital-phycom.
 - **`expanders/geomagnetic.py`** — The terrestrial expander. `FieldModel` holds `(declination_deg, inclination_deg, intensity_nt, anchor, lattice_hash)` agreed on out-of-band. `GeomagneticExpander.expand()` produces an HMAC-SHA256 stream keyed by `FieldModel.key()` and seeded by `seed.payload + epoch` — deterministic for anyone holding the same field model, noise for anyone who doesn't. `lattice_hash_from_axes` folds measured crystal/lattice axis vectors into a stable hash so a physical object seeds the model.
 - **`integration/demo.py`** — End-to-end: same message, two carriers, gate verification (wrong field model → noise).
@@ -58,7 +58,7 @@ Two parties sharing the same `Expander` instance (same physics model, same param
 
 ### Extending
 
-- **New expander**: subclass `Expander` in `expanders/`, implement the deterministic unfold, register with a unique `model_id`.
+- **New expander**: subclass `Expander` in `expanders/`, set `model_id`, implement `expand()`. Call `accepts(seed)` before expanding to guard against model_id mismatches. `keystream()` is inherited for free.
 - **Field model sharpening**: `FieldModel` in `expanders/geomagnetic.py` is the plug point for real IGRF/WMM data or magnetometer readings.
 - **Seed schema changes**: any change to `core/seed.py` wire format must stay compatible with BE2's CRC family and be coordinated across all four repos.
 
