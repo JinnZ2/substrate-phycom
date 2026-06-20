@@ -46,7 +46,7 @@ MESSAGE
 
 ### Key files in this repo
 
-- **`core/seed.py`** — The one unit that crosses every layer. 120-bit payload + `model_id` + epoch; CRC-16 wire format compatible with BE2's UDP mesh. Validates at both ends.
+- **`core/seed.py`** — The one unit that crosses every layer. 120-bit payload (15 bytes) + `model_id` + `epoch` (16-bit on wire). Wire format: `[1 ver | 2 epoch_lo | 1 model_len] + model_id + payload + CRC-16/CCITT-FALSE`. The CRC family is the same as BE2's `udp_mesh_spec`, so a seed validated here validates there. `seed_from_message` is a reference fold (SHA-256 of `message + model_id + epoch`, first 15 bytes) so the repo runs end-to-end on stdlib alone — in real deployment the fold comes from `geometric-to-binary-computational-bridge`.
 - **`core/expander.py`** — `Expander` abstract base. Any deterministic shared-physics model that can unfold a seed implements this interface.
 - **`expanders/orbital.py`** — Thin reference adapter to the orbital-phycom principle (prime-harmonic Kepler phase). Real engine lives in orbital-phycom.
 - **`expanders/geomagnetic.py`** — The terrestrial expander. `FieldModel` holds `(declination_deg, inclination_deg, intensity_nt, anchor, lattice_hash)` agreed on out-of-band. `GeomagneticExpander.expand()` produces an HMAC-SHA256 stream keyed by `FieldModel.key()` and seeded by `seed.payload + epoch` — deterministic for anyone holding the same field model, noise for anyone who doesn't. `lattice_hash_from_axes` folds measured crystal/lattice axis vectors into a stable hash so a physical object seeds the model.
