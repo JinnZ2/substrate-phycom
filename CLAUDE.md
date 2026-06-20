@@ -17,7 +17,7 @@ This repo's specific jobs:
 # Full stack demo — same message, two carriers (orbital ΔV + ground RF), gate test
 PYTHONPATH=. python -m integration.demo
 
-# Determinism + gate unit tests
+# Determinism + gate unit tests (no test framework needed — has its own runner)
 PYTHONPATH=. python tests/test_stack.py
 ```
 
