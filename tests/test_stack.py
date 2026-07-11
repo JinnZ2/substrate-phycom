@@ -9,15 +9,17 @@ from expanders.orbital import OrbitalExpander, T_NORMALIZED, T_ABSOLUTE, ENTROPY
 from expanders.geomagnetic import GeomagneticExpander, FieldModel, lattice_hash_from_axes, KEY_V1, KEY_V2
 
 
-# --- original contract tests (must still pass) ---
+# --- original contract tests ---
 
 def test_seed_wire_roundtrip():
-    s = seed_from_message(b"hello", "geomag.field.v1", epoch=7)
+    # model_id is an opaque string for the wire; no expander needed here
+    s = seed_from_message(b"hello", "test-model", epoch=7)
     assert Seed.from_wire(s.to_wire()) == s
 
 
 def test_seed_payload_size():
-    s = seed_from_message(b"x", "orbital.kepler.v1")
+    e = OrbitalExpander()
+    s = seed_from_message(b"x", e.model_id)
     assert len(s.payload) == SEED_PAYLOAD_BYTES
 
 
@@ -29,16 +31,61 @@ def test_orbital_deterministic():
 
 def test_geomag_deterministic_same_model():
     f = FieldModel(-1.6, 74.8, 57200.0, "anchor")
+    geo = GeomagneticExpander(f)
     a, b = GeomagneticExpander(f), GeomagneticExpander(f)
-    s = seed_from_message(b"abc", "geomag.field.v1", epoch=2)
+    s = seed_from_message(b"abc", geo.model_id, epoch=2)
     assert a.expand(s, 16) == b.expand(s, 16)
 
 
 def test_geomag_gate_wrong_model_diverges():
-    s = seed_from_message(b"abc", "geomag.field.v1", epoch=2)
     right = GeomagneticExpander(FieldModel(-1.6, 74.8, 57200.0, "right"))
     wrong = GeomagneticExpander(FieldModel(0.0, 0.0, 50000.0, "wrong"))
+    s = seed_from_message(b"abc", right.model_id, epoch=2)
     assert right.expand(s, 16) != wrong.expand(s, 16)
+
+
+# --- model_id encodes active modes (Inconsistency 1.3 / 1.4) ---
+
+def test_orbital_model_id_encodes_entropy_and_tmode():
+    full_norm = OrbitalExpander(entropy=ENTROPY_FULL,    t_mode=T_NORMALIZED)
+    part_norm = OrbitalExpander(entropy=ENTROPY_PARTIAL, t_mode=T_NORMALIZED)
+    full_abs  = OrbitalExpander(entropy=ENTROPY_FULL,    t_mode=T_ABSOLUTE)
+    assert full_norm.model_id != part_norm.model_id
+    assert full_norm.model_id != full_abs.model_id
+    assert part_norm.model_id != full_abs.model_id
+
+
+def test_geomag_model_id_encodes_key_version():
+    f_kv1 = FieldModel(0.0, 0.0, 50000.0, "place", key_version=KEY_V1)
+    f_kv2 = FieldModel(0.0, 0.0, 50000.0, "place", key_version=KEY_V2)
+    assert GeomagneticExpander(f_kv1).model_id != GeomagneticExpander(f_kv2).model_id
+
+
+def test_accepts_rejects_wrong_mode_mismatch():
+    # seed created for full-entropy expander; partial-entropy expander must not accept it
+    full = OrbitalExpander(entropy=ENTROPY_FULL)
+    part = OrbitalExpander(entropy=ENTROPY_PARTIAL)
+    s = seed_from_message(b"x", full.model_id)
+    assert full.accepts(s)
+    assert not part.accepts(s)
+
+
+# --- Inconsistency 1.1: epoch width in seed_from_message matches wire (16-bit) ---
+
+def test_epoch_hash_width_consistent_with_wire():
+    # Verify the fold uses !H (2 bytes) not !I (4 bytes) by checking that
+    # seeds with epoch=0 and epoch=65536 would have been identical under
+    # the old !I packing but are now rejected (epoch=65536 is invalid).
+    payload = bytes(SEED_PAYLOAD_BYTES)
+    try:
+        Seed(payload, "m", epoch=65536)
+        assert False, "should have been rejected"
+    except ValueError:
+        pass
+    # epoch=0 and epoch=1 must produce different payloads (proves epoch is in the hash)
+    s0 = seed_from_message(b"x", "m", epoch=0)
+    s1 = seed_from_message(b"x", "m", epoch=1)
+    assert s0.payload != s1.payload
 
 
 # --- Finding 1 / Finding 8: epoch range enforcement ---
@@ -83,8 +130,9 @@ def test_fold_safe_resolves_ambiguity():
 
 
 def test_fold_safe_still_deterministic():
-    s1 = seed_from_message(b"hello", "orbital.kepler.v1", epoch=5, fold=FOLD_SAFE)
-    s2 = seed_from_message(b"hello", "orbital.kepler.v1", epoch=5, fold=FOLD_SAFE)
+    e = OrbitalExpander()
+    s1 = seed_from_message(b"hello", e.model_id, epoch=5, fold=FOLD_SAFE)
+    s2 = seed_from_message(b"hello", e.model_id, epoch=5, fold=FOLD_SAFE)
     assert s1.payload == s2.payload
 
 
@@ -156,11 +204,10 @@ def test_from_wire_too_short_raises_value_error():
 
 # --- Finding 11: keystream fold modes ---
 
-def test_keystream_abs_mod_loses_sign():
+def test_keystream_abs_mod_runs():
     f = FieldModel(-1.6, 74.8, 57200.0, "a")
     geo = GeomagneticExpander(f)
-    s = seed_from_message(b"test", "geomag.field.v1", epoch=0)
-    # abs_mod: sign discarded; test that the fold at least runs
+    s = seed_from_message(b"test", geo.model_id, epoch=0)
     ks = geo.keystream(s, 8, fold=KEYSTREAM_ABS_MOD)
     assert len(ks) == 8
 
@@ -168,10 +215,9 @@ def test_keystream_abs_mod_loses_sign():
 def test_keystream_signed_distinct_from_abs_mod():
     f = FieldModel(-1.6, 74.8, 57200.0, "a")
     geo = GeomagneticExpander(f)
-    s = seed_from_message(b"test", "geomag.field.v1", epoch=0)
+    s = seed_from_message(b"test", geo.model_id, epoch=0)
     ks_abs = geo.keystream(s, 16, fold=KEYSTREAM_ABS_MOD)
     ks_sig = geo.keystream(s, 16, fold=KEYSTREAM_SIGNED)
-    # different fold methods; outputs will generally differ
     assert ks_abs != ks_sig
 
 

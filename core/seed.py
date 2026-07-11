@@ -134,7 +134,7 @@ def seed_from_message(
     runs end-to-end with nothing but stdlib.
     """
     mid = model_id.encode("utf-8")
-    epoch_bytes = struct.pack("!I", epoch)
+    epoch_bytes = struct.pack("!H", epoch)   # 16-bit, matching wire format (Finding 1.1)
     if fold == FOLD_SAFE:
         h_input = struct.pack("!I", len(message)) + message + mid + epoch_bytes
     else:  # FOLD_FLAT

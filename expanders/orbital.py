@@ -74,7 +74,10 @@ ENTROPY_FULL = "full"
 
 
 class OrbitalExpander(Expander):
-    model_id = "orbital.kepler.v1"
+    # model_id is an instance attribute (set in __init__) because it encodes
+    # the active entropy and t_mode choices. Two OrbitalExpanders with
+    # different modes have different model_ids, so accepts() and the gate
+    # catch the mismatch automatically. (Inconsistency 1.3)
     DEFAULT_SAMPLE_RATE = 256.0
 
     def __init__(
@@ -89,6 +92,9 @@ class OrbitalExpander(Expander):
         self.t_mode = t_mode
         self.sample_rate = sample_rate
         self.entropy = entropy
+        _e = "full" if entropy == ENTROPY_FULL else "part"
+        _t = "abs"  if t_mode  == T_ABSOLUTE   else "norm"
+        self.model_id = f"orbital.kepler.v1.e{_e}.t{_t}"
 
     def _t(self, k: int, epoch: int, steps: int) -> float:
         if self.t_mode == T_NORMALIZED:

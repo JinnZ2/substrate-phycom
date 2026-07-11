@@ -108,11 +108,13 @@ class FieldModel:
 
 
 class GeomagneticExpander(Expander):
-    model_id = "geomag.field.v1"
+    # model_id encodes the key_version so peers with mismatched key_version
+    # see different model_ids and accepts() rejects the mismatch. (Inconsistency 1.4)
 
     def __init__(self, field: FieldModel):
         self.field = field
         self._mkey = field.key()
+        self.model_id = f"geomag.field.v1.kv{field.key_version}"
 
     def expand(self, seed: Seed, steps: int) -> List[float]:
         # The expansion is an HMAC stream keyed by the FIELD MODEL and
