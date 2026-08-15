@@ -1,0 +1,41 @@
+name: ci
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # "Must run on a phone" means it must run on whatever Python is
+        # already there. No pinned toolchain, no install step.
+        python: ["3.9", "3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: no dependencies got in
+        run: python tools/check_stdlib_only.py
+
+      - name: contract tests
+        run: PYTHONPATH=. python tests/test_stack.py
+
+      - name: legacy ledger + golden vectors
+        run: PYTHONPATH=. python tests/test_legacy.py
+
+      - name: demos run
+        run: |
+          PYTHONPATH=. python -m integration.demo
+          PYTHONPATH=. python -m integration.demo_regenerate
+          PYTHONPATH=. python -m integration.demo_failures
+
+      - name: legacy ledger is readable
+        run: PYTHONPATH=. python -m legacy.modes

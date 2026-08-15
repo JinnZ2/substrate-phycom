@@ -28,23 +28,12 @@ model is as good a decompressor as a shared orbit.
 
 stdlib only.
 
---- AUDIT FINDINGS ADDRESSED ---
-Finding 3: FieldModel.key() concatenated anchor + lattice_hash without
-           a delimiter, so ("ab", "c") and ("a", "bc") produced the
-           same HMAC key. Two key_version choices:
-           KEY_V1 — flat concat; legacy, collision risk (especially when
-                    lattice_hash="", the default).
-           KEY_V2 — pack(len(anchor)) + anchor + lattice_hash;
-                    unambiguous regardless of string lengths (default).
+Retired modes honoured here: KEY_V1 (F-03), LATTICE_V1 (F-03b). See
+legacy/modes.py. Full ledger: NOTEBOOK.md
 
-lattice_hash_from_axes: flat hash loses vector structure — [[a,b]] and
-[[a],[b]] produced the same digest. version=2 (default) length-prefixes
-each vector so structure is preserved.
-
-Finding 1 impact: epoch in HMAC uses seed.epoch directly. Because
-Seed.__post_init__ now enforces epoch ∈ [0, 0xFFFF], the HMAC input
-is always consistent with what arrives from the wire. No separate
-truncation needed here.
+epoch in the HMAC uses seed.epoch directly, which is safe because
+Seed.__post_init__ enforces epoch ∈ [0, 0xFFFF] — the HMAC input is
+always consistent with what arrives from the wire (F-01).
 """
 
 from __future__ import annotations
@@ -57,11 +46,10 @@ from typing import List
 
 from core.seed import Seed
 from core.expander import Expander
+from legacy.modes import KEY_V1, LATTICE_V1
 
-
-# FieldModel.key() derivation choices (Finding 3)
-KEY_V1 = 1  # flat: anchor + lattice_hash — collision when one is a prefix of the other
-KEY_V2 = 2  # length-prefixed anchor: pack(len(anchor)) + anchor + lattice_hash — unambiguous
+KEY_V2 = 2      # length-prefixed anchor: pack(len(anchor)) + anchor + lattice_hash
+LATTICE_V2 = 2  # length-prefixed vectors: pack(len(vec)) before each vector
 
 
 @dataclass(frozen=True)
@@ -78,7 +66,7 @@ class FieldModel:
     anchor          : a stable label for the place / lattice / crystal axis set
     lattice_hash    : optional hash of a local anomaly map or crystal-axis
                       geometry. See lattice_hash_from_axes().
-    key_version     : KEY_V1 (legacy) or KEY_V2 (default, unambiguous).
+    key_version     : KEY_V1 (retired) or KEY_V2 (default, unambiguous).
                       Two FieldModels with different key_version are
                       functionally distinct — they derive different HMAC keys.
     """
@@ -100,9 +88,9 @@ class FieldModel:
         lh_b = self.lattice_hash.encode("utf-8")
         if self.key_version == KEY_V2:
             # length-prefixed: pack(len(anchor)) + anchor + lattice_hash
-            # unambiguous regardless of string content or length (Finding 3)
+            # unambiguous regardless of string content or length (F-03)
             raw += struct.pack("!I", len(anchor_b)) + anchor_b + lh_b
-        else:  # KEY_V1 — legacy; ("ab","c") == ("a","bc") == ("abc","")
+        else:  # KEY_V1 — retired; ("ab","c") == ("a","bc") == ("abc","")
             raw += anchor_b + lh_b
         return hashlib.sha256(raw).digest()
 
@@ -143,24 +131,22 @@ class GeomagneticExpander(Expander):
         return out
 
 
-def lattice_hash_from_axes(axes: List[List[float]], *, version: int = 2) -> str:
+def lattice_hash_from_axes(axes: List[List[float]], *, version: int = LATTICE_V2) -> str:
     """Fold a set of measured crystal/lattice axis vectors into a stable
     hash, so a physical reference object can seed the field model.
 
-    version=1 (flat, legacy): hashes components in order with no
-        structural markers. [[a, b]] and [[a], [b]] produce the same
-        digest — the vector count and per-vector lengths are lost.
+    version=LATTICE_V2 (default): packs len(vec) before each vector's
+        components, so [[a, b]] != [[a], [b]] and the structure of the
+        measurement survives. Use this for any new measurement.
 
-    version=2 (length-prefixed, default): packs len(vec) before each
-        vector's components. [[a, b]] != [[a], [b]]. Structure is
-        preserved. Use this for any new measurement.
+    version=LATTICE_V1: retired, flat. See legacy/modes.py, F-03b.
 
     Both versions round each component to 6 decimal places before
     packing as a big-endian double.
     """
     h = hashlib.sha256()
     for vec in axes:
-        if version == 2:
+        if version == LATTICE_V2:
             h.update(struct.pack("!I", len(vec)))
         for c in vec:
             h.update(struct.pack("!d", round(c, 6)))

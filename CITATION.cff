@@ -1,0 +1,47 @@
+cff-version: 1.2.0
+message: "If you use this work, you may cite it — but CC0 requires nothing of you."
+title: "substrate-phycom: seed-expander connective layer"
+abstract: >-
+  A connective layer that makes the EXPANDER pluggable in seed-based
+  physics communication. You transmit a 120-bit seed, not the message; a
+  shared deterministic physics model, which never crosses the wire,
+  expands it. The model is simultaneously the compression and the access
+  gate. Includes a terrestrial geomagnetic field-model expander, so the
+  architecture runs with no orbital dependency, and a ledger of every
+  claim the project has made, tested, and falsified.
+type: software
+authors:
+  - name: "JinnZ2"
+    alias: "JinnZ2"
+repository-code: "https://github.com/JinnZ2/substrate-phycom"
+url: "https://github.com/JinnZ2/substrate-phycom"
+license: CC0-1.0
+keywords:
+  - seed-based-communication
+  - deterministic-expansion
+  - physics-model-compression
+  - pluggable-expander
+  - geomagnetic
+  - orbital-mechanics
+  - zero-trust-transport
+  - protocol-design
+  - python-stdlib
+references:
+  - type: software
+    title: "orbital-phycom"
+    authors:
+      - name: "JinnZ2"
+    repository-code: "https://github.com/JinnZ2/orbital-phycom"
+    notes: "The reference expander this layer generalizes."
+  - type: software
+    title: "BE2-communication"
+    authors:
+      - name: "JinnZ2"
+    repository-code: "https://github.com/JinnZ2/BE2-communication"
+    notes: "The transport layer this seed rides over."
+  - type: software
+    title: "geometric-to-binary"
+    authors:
+      - name: "JinnZ2"
+    repository-code: "https://github.com/JinnZ2/geometric-to-binary"
+    notes: "The encoder that folds a message to a seed."
