@@ -20,11 +20,33 @@ optional triangulation anchor that sharpens the field model. Pull it
 and the channel still works, because the physics that does the
 decompression is the ground you are standing on.
 
-FieldModel below is deliberately pluggable and honest: it is keyed by
-measurable field parameters. Plug in IGRF/WMM values, a magnetometer
-reading, or a surveyed local anomaly map and the expansion sharpens.
-Nothing here claims magic — it claims that a shared deterministic field
-model is as good a decompressor as a shared orbit.
+FieldModel below is deliberately pluggable: it is keyed by measurable
+field parameters. Plug in IGRF/WMM values, a magnetometer reading, or a
+surveyed local anomaly map and the expansion sharpens. Nothing here
+claims magic — it claims that a shared deterministic field model is as
+good a decompressor as a shared orbit.
+
+--- HOW MUCH IS THE FIELD ACTUALLY WORTH? MEASURED. (F-17) ---
+The paragraph above is about decompression, and it holds. Do not read it
+as a claim about secrecy — that one was measured in round 3 and does not
+survive:
+
+    declination, inclination and intensity are PUBLISHED GEOPHYSICS
+    (WMM/IGRF), and they are not three independent parameters. All three
+    are functions of position, so the triple lies on a 2-D manifold. At
+    the rounding key() uses, that is 186 distinguishable keys per km^2:
+    ~2^21 against someone who knows your county, ~2^35 knowing nothing
+    about where you are at all — about 0.06 core-days.
+
+So the field is a SALT, not a key. It makes an attack per-place, which
+is worth having: breaking one channel does not break the next town over.
+It is not secrecy. Whatever real strength exists lives in `anchor` and
+`lattice_hash` — which are strings and surveyed data, not physics.
+
+    Treat a FieldModel with a guessable anchor and an empty
+    lattice_hash (the default) as UNKEYED.
+
+Re-run the measurement yourself: python tools/measure_field_entropy.py
 
 stdlib only.
 
@@ -103,6 +125,12 @@ class GeomagneticExpander(Expander):
         self.field = field
         self._mkey = field.key()
         self.model_id = f"geomag.field.v1.kv{field.key_version}"
+
+    def model_key(self) -> bytes:
+        """The field model's derived key. See F-17 for what it is worth:
+        the published field values contribute ~2^21 against a
+        county-level guess. `anchor` and `lattice_hash` carry the rest."""
+        return self._mkey
 
     def expand(self, seed: Seed, steps: int) -> List[float]:
         # The expansion is an HMAC stream keyed by the FIELD MODEL and

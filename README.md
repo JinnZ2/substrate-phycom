@@ -41,9 +41,10 @@ PYTHONPATH=. python -m integration.demo             # two carriers, one seed
 PYTHONPATH=. python -m integration.demo_regenerate  # does the message come back?
 PYTHONPATH=. python -m integration.demo_failures    # what the gate does when wrong
 
-PYTHONPATH=. python tests/test_stack.py             # 47 contract tests
+PYTHONPATH=. python tests/test_stack.py             # 54 contract tests
 PYTHONPATH=. python tests/test_legacy.py            # 17 golden vectors + ledger
 python tools/check_stdlib_only.py                   # the no-deps rule, enforced
+python tools/measure_field_entropy.py               # what the field is really worth
 ```
 
 ## Use it
@@ -89,11 +90,36 @@ message across, and they trade off:
 | on the wire | seed only (40 B) | seed + message-sized ciphertext |
 | message space | shared, enumerable | arbitrary |
 | compresses? | **yes** | no |
-| gated by | not holding the codebook | not holding the model |
+| gated by | the fold's key — **pass one** | not holding the model |
 
-Both run in `integration/demo_regenerate.py`. The shared model is the
-gate in both. The *compression* claim holds only in regime A, where the
-message already exists at the far end.
+Both run in `integration/demo_regenerate.py`. The *compression* claim
+holds only in regime A, where the message already exists at the far end.
+
+**Regime A needs `key=expander.model_key()` unless your codebook is
+secret.** Unkeyed, the fold reads only `(message, model_id, epoch)` and
+the last two ride in the clear — so anyone holding the codebook reads
+the traffic, and the field model is never consulted. Measured against
+the real 90-claim corpus in [F-16](NOTEBOOK.md#round-3--the-two-blocking-unknowns-run);
+keyed, recovery needs the codebook *and* the model.
+
+## What the field model is worth
+
+Measured, don't guess — `python tools/measure_field_entropy.py`:
+
+```
+key density ........................ 186 distinct keys per km²
+attacker knows your county ......... 2^21   (372 ms to exhaust)
+attacker knows nothing at all ...... 2^35   (0.06 core-days)
+```
+
+Declination, inclination and intensity are published geophysics, and
+they are not independent — all three are functions of position, so the
+triple is a 2-D manifold, not a 3-D space. **The field is a salt, not a
+key.** It makes an attack per-place, which is worth having. It is not
+secrecy. Real strength has to come from `anchor` and `lattice_hash` —
+surveyed data, not published values. Treat a `FieldModel` with a
+guessable anchor and an empty `lattice_hash` as unkeyed.
+([F-17](NOTEBOOK.md#round-3--the-two-blocking-unknowns-run).)
 
 ## Layout
 
@@ -132,11 +158,15 @@ checks the template itself so it cannot rot.
 ## How this repo is developed
 
 Hypothesize, run, record, falsify, edit the claim, name the unknowns,
-rerun. [`NOTEBOOK.md`](NOTEBOOK.md) is the ledger: fourteen findings,
-what each one killed, and a list of **open unknowns** that are honestly
-still open — including [U-6](NOTEBOOK.md#u-6), which argues the
-geomagnetic field is doing less cryptographic work than this module's
-prose implies.
+rerun. [`NOTEBOOK.md`](NOTEBOOK.md) is the ledger: three rounds,
+seventeen findings, what each one killed, and a live list of **open
+unknowns** — currently [U-8](NOTEBOOK.md#u-8) (the seed loses on the
+wire until `model_id` shrinks) and [U-9](NOTEBOOK.md#u-9) (the keyed
+fold still has no strong second factor).
+
+It also carries a [potential applications](NOTEBOOK.md#potential-applications)
+list, split by what has actually been run — including two directions
+that measurement ruled *out*.
 
 Falsified claims are not deleted. They are kept next to what replaced
 them, because the reasoning is the part that gets lost.

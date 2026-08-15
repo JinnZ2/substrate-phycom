@@ -31,7 +31,11 @@ from expanders.geomagnetic import FieldModel, GeomagneticExpander
 # --- REGIME A: the seed SELECTS from a shared message space ----------
 
 def codebook_recover(
-    seed: Seed, codebook: List[bytes], model_id: str, epoch: int
+    seed: Seed,
+    codebook: List[bytes],
+    model_id: str,
+    epoch: int,
+    key: bytes = b"",
 ) -> Optional[bytes]:
     """Regenerate the message by re-folding every candidate the far end
     already holds and matching payloads.
@@ -42,16 +46,18 @@ def codebook_recover(
     part of the model, and the model does not travel.
 
     The cost is the constraint: you cannot send a message that is not
-    already in the codebook. Search is O(len(codebook)) folds, which is
-    trivial for a hundred entries and impossible for open text.
+    already in the codebook. Search is O(len(codebook)) folds — measured
+    at 0.1 ms against a 90-entry codebook (F-15), and impossible for
+    open text.
 
-    An observer who lacks the codebook holds a 120-bit hash of an
-    unknown preimage. An observer who has it needs only the model_id
-    and epoch, both of which are in the clear on the wire — so the
-    codebook, not the seed, is the secret here.
+    PASS `key` UNLESS THE CODEBOOK IS SECRET. Without it the fold reads
+    only (message, model_id, epoch), and the last two travel in the
+    clear — so anyone holding the codebook recovers the message and the
+    field model is never consulted (F-16). `key=expander.model_key()`
+    makes recovery need both factors.
     """
     for candidate in codebook:
-        if seed_from_message(candidate, model_id, epoch).payload == seed.payload:
+        if seed_from_message(candidate, model_id, epoch, key=key).payload == seed.payload:
             return candidate
     return None
 
@@ -112,6 +118,24 @@ def run():
     print(f"on wire   : {len(s.to_wire())}B carried a {len(message)}B message")
     blind = codebook_recover(s, [c for c in codebook if c != message], geo.model_id, epoch)
     print(f"without the codebook entry: {blind!r}  <- no shared space, no message\n")
+
+    print("=== REGIME A', keyed: when the codebook is NOT secret ===")
+    # Unkeyed, the fold reads only (message, model_id, epoch) — and the
+    # last two are printed on the wire. A public codebook is then enough
+    # to read the traffic, and the field model never enters into it.
+    print(f"unkeyed, attacker holds only the public codebook: "
+          f"{codebook_recover(s, codebook, geo.model_id, epoch) == message}  <- no gate")
+    ks = seed_from_message(message, geo.model_id, epoch, key=geo.model_key())
+    print(f"keyed seed: {ks.fingerprint()} (differs: {ks.payload != s.payload})")
+    print(f"  codebook + field model : "
+          f"{codebook_recover(ks, codebook, geo.model_id, epoch, key=geo.model_key()) == message}")
+    print(f"  codebook, wrong field  : "
+          f"{codebook_recover(ks, codebook, geo.model_id, epoch, key=wrong.model_key()) is None}"
+          f"  (recovers nothing)")
+    print(f"  codebook, no key       : "
+          f"{codebook_recover(ks, codebook, geo.model_id, epoch) is None}  (recovers nothing)")
+    print("both factors required. See NOTEBOOK.md F-16, and F-17 for what")
+    print("the field model is actually worth as the second one.\n")
 
     print("=== REGIME B: physics-keyed pad, arbitrary message ===")
     ct = pad_apply(geo, s, message)

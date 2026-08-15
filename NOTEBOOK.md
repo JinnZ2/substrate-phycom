@@ -33,10 +33,10 @@ kept in [`legacy/`](legacy/).
    with a status, not into someone's head.
 6. **Rerun everything.** Not the one test you just wrote. The failure
    modes worth catching are the ones you did not predict, and the whole
-   suite is 64 tests and under a second.
+   suite is 71 tests and under a second.
 
 **The rule that makes the rest work:** never edit a past round to match
-what you later learned. `legacy/reviews/round1-review.md` still contains
+what you later learned. `legacy/reviews/02-code-audit.md` still contains
 its original wrong guesses. Round 2 corrects them *below*, next to the
 claim, where the correction is legible as a correction. An audit trail
 that has been tidied up is not an audit trail.
@@ -322,21 +322,218 @@ Round 1 left several numeric assertions in comments, unverified.
 
 ---
 
+## Round 3 — the two blocking unknowns, run
+
+Round 2 closed with U-1 marked `BLOCKING` ("lives in another repo, not
+runnable here") and U-6 marked `IMPORTANT` ("nobody has measured it").
+Both are now run. Both changed the design.
+
+### F-15 — is the real encoder invertible? (U-1)
+
+- **Claim** `seed_from_message` is only a *reference* fold; the real one
+  is `geometric-to-binary`, and if it is invertible then regime A stops
+  needing a codebook and the compression claim gets much stronger.
+- **Run** cloned `JinnZ2/geometric-to-binary` and read it.
+- **Result** **The premise was wrong.** `geometric-to-binary` is not a
+  message encoder at all — it is a SymPy physics playground: 90
+  equations, a 112-edge morphism graph, numpy/sympy dependencies. There
+  is no message-to-seed fold in it to be invertible.
+
+  What it *does* carry is `CLAIM_SCHEMA.py`, a stdlib-only binary codec:
+
+  ```
+  encode_claim(dict) -> 25 bytes
+  decode_claim(blob, table, id_lookup) -> dict     # needs CLAIM_TABLE.json
+  ```
+
+  So the stack's real encoder **is invertible — but only against a
+  shared table.** That table is a codebook. Which means:
+- **Edit** *Regime A is not a workaround for a missing inverse. Regime A
+  is the architecture, and it always was.* The ecosystem already
+  standardised on shared-table decoding before this repo existed; round
+  2 rediscovered it from first principles and mistook it for a
+  limitation.
+- **Also run** all 90 real claims through a substrate-phycom round trip:
+
+  | | bytes on the wire |
+  |---|---|
+  | prose | ~2400 B |
+  | `.claims` pipe line | 137 B (mean of the 90) |
+  | `encode_claim()` binary | **25 B** + 8,199 B shared table |
+  | substrate-phycom seed | **40 B** + shared `.claims` + field model |
+
+  90/90 recovered exactly, zero payload collisions, 0.1 ms mean search
+  against the 90-entry codebook. It works — **and it loses.** The
+  existing 25-byte codec already beats our 40-byte seed, so on this
+  message space the seed buys no compression at all. 19 of those 40
+  bytes are the `model_id` string. See [U-8](#u-8).
+- **Opened** [U-8](#u-8), and it retires the framing of U-1 entirely.
+
+### F-16 — regime A's gate (does not exist)
+
+Found while running F-15, not looked for.
+
+- **Claim** (round 2, the regime A table) regime A is "gated by not
+  holding the codebook".
+- **Run** `test_unkeyed_fold_gives_regime_a_no_gate`, and directly
+  against the real corpus: attacker holds the public `.claims` file and
+  no field model at all.
+- **Result** **FALSIFIED, and it is a real hole.** `seed_from_message`
+  hashes `(message, model_id, epoch)` — nothing else. `model_id` and
+  `epoch` both travel in the clear on the wire. So anyone holding the
+  codebook re-folds every entry and reads the message, and **the field
+  model is never consulted by the fold at any point.** The attacker in
+  the test recovers the plaintext claim immediately.
+
+  Round 2 wrote "the codebook, not the seed, is the secret here" and
+  did not follow the sentence to its conclusion: the codebooks in this
+  ecosystem are CC0, in public repos. A public codebook is not a secret,
+  so regime A as shipped had no gate whatsoever.
+- **Edit** `seed_from_message(key=...)` — HMAC instead of bare SHA-256
+  when a key is supplied, `b""` (default) reproducing every payload ever
+  minted, so all golden vectors survive untouched. `Expander.model_key()`
+  supplies it. Recovery now needs the codebook **and** the model.
+
+  `model_key()` returns `b""` on the base class, and `OrbitalExpander`
+  does not override it. That is deliberate: orbital's parameters are
+  public or encoded in `model_id`, so it has no secret to offer, and
+  claiming one it does not have would be worse than admitting it.
+- **Opened** [U-9](#u-9).
+
+### F-17 — how much key material is in a field survey? (U-6)
+
+- **Claim** (round 2's estimate) an attacker knowing the region to ±1°
+  and ±100 nT searches ~2000 × 2000 × 1000 ≈ 2^32 candidates.
+- **Run** `python tools/measure_field_entropy.py` — centred tilted
+  dipole, stdlib only, grid halved until the key count converges.
+- **Result** **FALSIFIED — my own estimate was far too generous**, and
+  wrong in method, not just in magnitude. It multiplied the three
+  parameter ranges as though declination, inclination and intensity were
+  independent. They are not: all three are functions of position, so the
+  triple lies on a **2-dimensional manifold** in 3-space. Multiplying
+  three ranges counts a 3-D box drawn around a 2-D surface. Measured
+  overcount from that error alone: **107× at 10 km**, growing with area.
+
+  Measured, at the rounding `FieldModel.key()` actually uses:
+
+  | | |
+  |---|---|
+  | key density | **186 distinct keys per km²** (one per ~73 m square) |
+  | attacker knows your county (100 km) | 2^21 — **372 ms** to exhaust |
+  | attacker knows your region (1000 km) | 2^27.5 — 37 s |
+  | attacker knows *nothing* about location | 2^35 — **0.06 core-days** |
+
+  For comparison: the seed payload is 2^120 and HMAC-SHA256 is 2^256.
+- **Edit** the module's story is inverted. It is written as though the
+  field is the secret; the arithmetic says **the field is a salt and the
+  anchor is the key.** A salt is not worthless — it makes the search
+  per-place, so one broken channel does not break the next town over.
+  But a `FieldModel` with a guessable `anchor` and an empty
+  `lattice_hash` (the default) must be treated as **unkeyed**.
+  `geomagnetic.py`, `expander.model_key()` and the README now say so.
+- **Limits, stated** the dipole model omits crustal anomalies, which
+  raise the local count. That does not rescue the claim — it relocates
+  it. Anomaly structure is *surveyed* data, not published geophysics,
+  which is exactly what `lattice_hash_from_axes` exists to fold in. The
+  finding is not "the field is useless", it is "the *published* field is
+  not the secret; the *survey* is."
+- **Opened** [U-9](#u-9), [U-10](#u-10).
+
+### What closed, what opened
+
+| | |
+|---|---|
+| closed | U-1 (premise wrong; regime A is the architecture) · U-6 (measured: salt, not key) |
+| opened | [U-8](#u-8) model_id dominates the wire · [U-9](#u-9) where does real key material come from · [U-10](#u-10) secular variation |
+
+---
+
+## Potential applications
+
+Posed after round 3, and split honestly by what has actually been run.
+The measurements above kill some obvious-sounding ideas, which is the
+point of having run them first.
+
+### Tested
+
+**A1 — claim broadcast across the JinnZ2 ecosystem.** `.claims` corpora
+are already shared, enumerable and stdlib-decodable — a ready-made
+regime A codebook. All 90 claims round-trip, 0.1 ms recovery, zero
+collisions. **But** the honest result is that the existing 25-byte
+`encode_claim()` already beats a 40-byte seed, so *this is not a
+compression win.* What it does buy, keyed, is a gate the plain codec has
+no notion of: `encode_claim` output is readable by anyone with the
+public table, a keyed seed is not. Use it where you want a claim
+reference that only a co-located holder can resolve — not to save bytes.
+Fix [U-8](#u-8) and the seed drops to ~21 B and wins on both.
+
+**A2 — physics-keyed pad for arbitrary text** (regime B). Round-trips
+any message, gated by the model. Real constraint: it does not compress,
+and reusing `(seed, epoch)` reuses the pad. See [U-2](#u-2).
+
+**A3 — two-factor place-bound reference** (F-16's keyed fold). Resolving
+a seed requires the codebook *and* a survey of the place. Per F-17 the
+published-field component is only ~2^21, so this is meaningful only
+with a real `lattice_hash` — but the *structure* is sound and tested.
+
+### Posed, not run
+
+**A4 — emergency / off-grid codebook radio.** The natural home for
+regime A: a fixed set of status messages and a grid-square location
+codebook, seeds over CB/HAM/LoRa. Message spaces of tens to hundreds of
+entries are where regime A is strongest and where a 15-byte payload
+genuinely beats sending text. Needs [U-8](#u-8) to be worth the wire.
+
+**A5 — quantized sensor telemetry.** Readings bucketed into a shared
+quantization codebook; the seed selects a bucket. Same shape as A4,
+with the codebook generated rather than written. Untested: whether
+bucket counts stay small enough for the O(n) search.
+
+**A6 — location-attested messaging.** Because the key is per-place, a
+seed that resolves proves the sender held *that* place's survey. F-17
+says the published field cannot carry this (2^21 is not an attestation),
+but a private anomaly survey folded through `lattice_hash_from_axes`
+might. **This is the most interesting untested direction, and it is
+entirely contingent on [U-9](#u-9).**
+
+**A7 — token-minimal agent corpora.** `CLAIM_SCHEMA.py`'s stated purpose
+is cheap reading by AI agents. Seeds as claim references is a natural
+extension — but the 8 KB shared table dominates until corpora are far
+larger than 90 entries, so this earns nothing yet. Revisit at ~10k
+claims.
+
+### Ruled out by measurement
+
+**Not a general-purpose compressor.** F-13 and F-15 together: the fold
+is one-way, so the only compressing regime needs a shared enumerable
+message space, and on the one real corpus available the existing codec
+is already smaller. Seeds compress *selection*, not *content*.
+
+**Not a cryptosystem keyed by geophysics.** F-17. Published field values
+are a salt worth ~2^21–2^35. Anything that needs real key strength must
+get it from surveyed data or conventional key material, and should say
+which.
+
+---
+
 ## Open unknowns
 
 The live list. An unknown leaves this section by being **run**, not by
-being reasoned about.
+being reasoned about. Closed entries stay, with what closed them —
+knowing a question is settled is worth as much as the answer.
 
 <a id="u-1"></a>
-### U-1 — is the real encoder invertible? `OPEN, BLOCKING`
+### U-1 — is the real encoder invertible? `CLOSED, round 3 (F-15)`
 
-`seed_from_message` is a *reference* fold. The real one is
+~~`seed_from_message` is a reference fold. The real one is
 `geometric-to-binary`. If that encoder is invertible, regime A stops
-needing a codebook and the compression claim gets much stronger; if it
-is not, regime A's codebook requirement is permanent and should be
-stated in the README as a design constraint rather than an
-implementation detail. **Everything about the headline claim depends on
-this answer, and it lives in another repo.** Not runnable here.
+needing a codebook.~~
+
+**The premise was wrong.** `geometric-to-binary` is a SymPy physics
+playground, not a message encoder. The stack's actual encoder is
+`CLAIM_SCHEMA.py`: invertible, but only against a shared
+`CLAIM_TABLE.json`. That is a codebook. Regime A is not a workaround for
+a missing inverse — it is the architecture the ecosystem already ran on.
 
 <a id="u-2"></a>
 ### U-2 — nonce discipline is documented, not enforced `OPEN`
@@ -387,34 +584,79 @@ model, then decide if 120 bits is the right size or just the size
 `orbital-phycom` happened to use.
 
 <a id="u-6"></a>
-### U-6 — how much key material is really in a field survey? `OPEN, IMPORTANT`
+### U-6 — how much key material is really in a field survey? `CLOSED, round 3 (F-17)`
 
-The gate rests on an attacker not knowing the `FieldModel`. But the
-physical parameters are *public geophysics*: declination, inclination
-and intensity are published globally by WMM/IGRF. `key()` rounds them to
-3, 3 and 1 decimal places. An attacker who knows the region to ±1° and
-±100 nT searches roughly 2000 × 2000 × 1000 ≈ 2^32 candidates — small.
-The strength is therefore carried almost entirely by `anchor` and
-`lattice_hash`, which are *strings*, not physics.
+~~An attacker who knows the region to ±1° and ±100 nT searches roughly
+2000 × 2000 × 1000 ≈ 2^32 candidates.~~
 
-That inverts the story the module tells. It is written as though the
-field is the secret; the arithmetic says the field is a *salt* and the
-anchor is the key. That may be fine — a surveyed local anomaly map or a
-measured crystal axis set is genuinely private, and `lattice_hash_from_axes`
-exists precisely to fold one in. But it is not what the docstring
-implies, and nobody has measured it. **Run to close:** estimate the real
-entropy of a regional field survey at the rounding actually used, and
-either document the field as a salt or raise the precision so it carries
-weight. Until then, treat a `FieldModel` with a guessable `anchor` and
-an empty `lattice_hash` as **unkeyed**.
+**Measured, and my estimate was wrong in method.** It multiplied three
+parameter ranges as though they were independent; they are all functions
+of position, so the triple is a 2-D manifold in 3-space (107× overcount
+at 10 km, worse with area). Real numbers: **186 keys/km²**, 2^21 against
+a county-level guess (372 ms), 2^35 knowing nothing at all (0.06
+core-days). The field is a **salt**, not a key. Re-run any time with
+`python tools/measure_field_entropy.py`.
 
 <a id="u-7"></a>
 ### U-7 — regime A's search cost is unbounded in the docs `OPEN, MINOR`
 
-`codebook_recover` is O(n) folds with no cap. Fine for hundreds, and a
-denial-of-service knob for an attacker who can make a receiver search a
-large space against an unmatchable seed. **Run to close:** benchmark,
-then either document a maximum codebook size or take a cap parameter.
+`codebook_recover` is O(n) folds with no cap. Round 3 measured the
+constant — 0.1 ms against a 90-entry codebook, so ~1.1 µs per fold — but
+the cap is still missing, and it is a denial-of-service knob for an
+attacker who can make a receiver search a large space against an
+unmatchable seed. **Run to close:** decide a maximum codebook size or
+take a cap parameter.
+
+<a id="u-8"></a>
+### U-8 — `model_id` is half the wire `OPEN, IMPORTANT`
+
+Measured in F-15: a geomagnetic seed is 40 bytes on the wire, of which
+**19 are the `model_id` string** and 15 are the payload. That is why the
+seed lost to `encode_claim()`'s 25 bytes on the one real corpus we have.
+
+Replacing the readable string with a 2-byte registry index would put the
+seed at ~21 B — under the 25 B codec, turning A1 and A4 from "works but
+loses" into a genuine win. It would also close most of [U-4](#u-4): a
+2-byte index leaks far less than `"geomag.field.v1.kv2"`, and a
+*truncated keyed hash* of the model would leak nothing to an observer
+without the model.
+
+The cost is a registry both ends must share — one more thing in the
+out-of-band agreement, and a versioning problem when it changes.
+**Run to close:** prototype the index, measure the wire, and decide
+whether the registry belongs in this repo or in BE2.
+
+<a id="u-9"></a>
+### U-9 — where does real key material come from? `OPEN, IMPORTANT`
+
+F-17 established that published field values are a salt (~2^21–2^35).
+F-16's keyed fold is only as strong as what `model_key()` returns, so
+right now the two-factor gate has one strong factor (the codebook, if
+private) and one weak one.
+
+`lattice_hash_from_axes` is the intended answer: a surveyed local
+anomaly map, or a measured crystal axis set, is genuinely private data
+rather than published geophysics. Nobody has measured how much entropy a
+realistic survey carries, or how repeatably two parties can measure the
+same object to 6 decimal places and derive the same hash — and if they
+cannot, determinism breaks and the channel simply fails.
+
+**This gates [A6](#potential-applications) entirely, and A6 is the most
+interesting untested direction.** Run to close: take a real axis
+measurement twice with the same instrument, see whether the hashes match
+at the current rounding, then estimate the entropy of the measurement.
+
+<a id="u-10"></a>
+### U-10 — secular variation as a dimension `OPEN, MINOR`
+
+The field drifts. `tools/measure_field_entropy.py` ignores this, which
+makes its estimate *conservative* in one direction: an attacker must
+also match the survey epoch, adding a dimension. It also means a survey
+goes stale, and two parties who surveyed years apart derive different
+keys and silently fail to communicate — the F-04 failure shape again,
+in the physical layer. **Run to close:** bound the drift rate against
+the rounding in `key()`, which gives both the added search cost and the
+survey's shelf life.
 
 ---
 
@@ -435,9 +677,16 @@ PYTHONPATH=. python -m legacy.modes                 # why each mode was retired
 
 Then:
 
-1. Pick an unknown from the list above. Prefer one marked `BLOCKING` or
-   `IMPORTANT` — U-1 and U-6 both bear directly on whether the headline
-   claim survives.
+1. Pick an unknown from the list above. Prefer one marked `IMPORTANT` —
+   currently U-8 (the seed loses on the wire until `model_id` shrinks)
+   and U-9 (the keyed fold has no strong second factor until we know
+   what a real survey is worth). U-9 gates A6, the most interesting
+   untested application.
+
+   Round 3's lesson on picking: U-1 was marked `BLOCKING` for a whole
+   round on the assumption it was unrunnable. It took one `git clone`,
+   and the answer was that the question's premise was wrong. Check
+   whether an unknown is actually blocked before believing it is.
 2. Restate it as something that can fail, and write the test *first*.
    If you cannot write a test that would fail, the claim is not yet a
    claim.

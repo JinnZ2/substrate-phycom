@@ -452,6 +452,83 @@ def test_expansion_is_not_invertible_to_the_message():
     assert bytes(int((v + 1.0) * 127.5) & 0xFF for v in sched) != msg
 
 
+# ======================================================================
+# ROUND 3 — F-16: regime A has no gate when the codebook is public
+# ======================================================================
+
+def test_unkeyed_fold_gives_regime_a_no_gate():
+    """Pinned as the reason the keyed fold exists. Unkeyed, the fold
+    reads only (message, model_id, epoch) — and the last two ride in
+    the clear. A public codebook is then sufficient to read traffic,
+    and the field model is never consulted."""
+    geo = GeomagneticExpander(FieldModel(-1.6, 74.8, 57200.0, "here"))
+    book = [b"hold", b"fall back", b"abort"]
+    s = seed_from_message(b"abort", geo.model_id, epoch=9)
+    # attacker: has the public codebook, holds no field model at all
+    assert codebook_recover(s, book, s.model_id, s.epoch) == b"abort"
+
+
+def test_keyed_fold_requires_both_factors():
+    geo = GeomagneticExpander(FieldModel(-1.6, 74.8, 57200.0, "here"))
+    wrong = GeomagneticExpander(FieldModel(0.0, 0.0, 50000.0, "elsewhere"))
+    book = [b"hold", b"fall back", b"abort"]
+    k = geo.model_key()
+    s = seed_from_message(b"abort", geo.model_id, epoch=9, key=k)
+
+    assert codebook_recover(s, book, geo.model_id, 9, key=k) == b"abort"
+    assert codebook_recover(s, book, geo.model_id, 9) is None            # no key
+    assert codebook_recover(s, book, geo.model_id, 9,
+                            key=wrong.model_key()) is None               # wrong key
+    assert codebook_recover(s, [b"hold"], geo.model_id, 9, key=k) is None  # no entry
+
+
+def test_keyed_fold_is_backward_compatible():
+    """key=b"" must reproduce every payload this repo has ever minted,
+    or the golden vectors in test_legacy.py are meaningless."""
+    for kwargs in ({}, {"fold": FOLD_SAFE}, {"fold": FOLD_FLAT}):
+        a = seed_from_message(b"precedent", "test-model", 7, **kwargs)
+        b = seed_from_message(b"precedent", "test-model", 7, key=b"", **kwargs)
+        assert a.payload == b.payload
+
+
+def test_keyed_fold_changes_the_payload():
+    geo = GeomagneticExpander(FieldModel(-1.6, 74.8, 57200.0, "here"))
+    plain = seed_from_message(b"x", geo.model_id, 3)
+    keyed = seed_from_message(b"x", geo.model_id, 3, key=geo.model_key())
+    assert plain.payload != keyed.payload
+    # ...and stays deterministic, which is still the contract
+    assert keyed.payload == seed_from_message(b"x", geo.model_id, 3,
+                                              key=geo.model_key()).payload
+
+
+def test_keyed_fold_tracks_the_field_model():
+    a = GeomagneticExpander(FieldModel(-1.6, 74.8, 57200.0, "here"))
+    b = GeomagneticExpander(FieldModel(-1.6, 74.8, 57200.0, "there"))
+    assert a.model_id == b.model_id          # same id, different survey
+    assert a.model_key() != b.model_key()
+    assert seed_from_message(b"x", a.model_id, 3, key=a.model_key()).payload != \
+           seed_from_message(b"x", b.model_id, 3, key=b.model_key()).payload
+
+
+def test_model_key_default_is_empty_and_honest():
+    """An expander with no secret must say so rather than return
+    something key-shaped. Orbital's parameters are all public or in
+    the model_id, so it has nothing to offer."""
+    assert OrbitalExpander().model_key() == b""
+    geo = GeomagneticExpander(FieldModel(-1.6, 74.8, 57200.0, "here"))
+    assert geo.model_key() == geo.field.key()
+    t = TemplateExpander(TemplateModel(1.5, "a"))
+    assert t.model_key() == t.model.key()
+
+
+def test_empty_model_key_leaves_the_fold_unkeyed():
+    """OrbitalExpander.model_key() is b"", so passing it must not
+    silently look like keying. It folds exactly as before."""
+    orb = OrbitalExpander()
+    assert seed_from_message(b"x", orb.model_id, 3, key=orb.model_key()).payload == \
+           seed_from_message(b"x", orb.model_id, 3).payload
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

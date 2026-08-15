@@ -39,3 +39,6 @@ jobs:
 
       - name: legacy ledger is readable
         run: PYTHONPATH=. python -m legacy.modes
+
+      - name: field entropy measurement still converges
+        run: python tools/measure_field_entropy.py

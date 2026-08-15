@@ -105,3 +105,22 @@ class Expander(ABC):
 
     def accepts(self, seed: Seed) -> bool:
         return seed.model_id == self.model_id
+
+    def model_key(self) -> bytes:
+        """Secret material this model holds that never crosses the wire.
+
+        Pass it to seed_from_message(key=...) to key the fold, which is
+        what gives regime A a gate when the codebook is public (F-16).
+
+        Returns b"" here, meaning *this expander offers no secret* — and
+        that is the honest answer for OrbitalExpander, whose parameters
+        (periods, sample_rate, modes) are all either public or encoded
+        in model_id. An expander whose model is genuinely private
+        overrides this; GeomagneticExpander and TemplateExpander do.
+
+        Read F-17 before treating a returned key as strong. A
+        geomagnetic model key derived only from published field values
+        is worth about 2^21 against someone who knows your county — it
+        is a salt that makes the search per-place, not a key.
+        """
+        return b""

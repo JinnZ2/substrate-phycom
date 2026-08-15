@@ -17,6 +17,7 @@ Full ledger: NOTEBOOK.md
 from __future__ import annotations
 
 import hashlib
+import hmac
 import struct
 from dataclasses import dataclass
 
@@ -105,8 +106,21 @@ def seed_from_message(
     epoch: int = 0,
     *,
     fold: str = FOLD_SAFE,
+    key: bytes = b"",
 ) -> "Seed":
     """Deterministically fold an arbitrary message down to a seed.
+
+    key: optional model key, from Expander.model_key(). Empty (default)
+        folds with bare SHA-256 and reproduces every payload this repo
+        has ever minted. Non-empty folds with HMAC instead, so the fold
+        itself requires the shared model.
+
+        Supply it whenever the codebook is not secret. Round 3 measured
+        the alternative: with a public codebook and an unkeyed fold,
+        regime A has NO gate at all — model_id and epoch both ride in
+        the clear, so anyone holding the codebook re-folds every entry
+        and reads the message. The field model was never consulted.
+        (F-16.) Keyed, recovery needs the codebook AND the model.
 
     fold=FOLD_SAFE (default): pack(len(message)) + message + model_id + pack(epoch).
         Unambiguous — different (message, model_id) pairs always produce
@@ -137,5 +151,8 @@ def seed_from_message(
         h_input = struct.pack("!I", len(message)) + message + mid + epoch_bytes
     else:  # FOLD_FLAT
         h_input = message + mid + epoch_bytes
-    digest = hashlib.sha256(h_input).digest()
+    if key:
+        digest = hmac.new(key, h_input, hashlib.sha256).digest()
+    else:
+        digest = hashlib.sha256(h_input).digest()
     return Seed(payload=digest[:SEED_PAYLOAD_BYTES], model_id=model_id, epoch=epoch)

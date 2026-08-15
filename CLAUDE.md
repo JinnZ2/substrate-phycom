@@ -21,11 +21,23 @@ nothing here inverts a hash. Two regimes actually move a message:
 - **A — shared codebook.** The seed *selects* a message the far end
   already holds. Seed-only on the wire. **This is the regime that
   compresses**, and it requires an enumerable shared message space.
+  **Pass `key=expander.model_key()` unless the codebook is secret** —
+  unkeyed it has no gate at all (F-16).
 - **B — physics-keyed pad.** The expander's keystream carries an
   arbitrary message. Wire carries seed + message-sized ciphertext, so
   this is secrecy, not compression.
 
-The shared model is the gate in both. Say which regime you mean.
+Say which regime you mean.
+
+## What the field model is worth (measured, F-17)
+`expanders/geomagnetic.py` reads as though the field is the secret. It
+is not. Declination/inclination/intensity are published geophysics and
+are not independent — all three are functions of position, so the triple
+is a 2-D manifold. Measured: 186 keys/km², ~2^21 against a county-level
+guess, ~2^35 knowing nothing. **The field is a salt, not a key.** Real
+strength must come from `anchor` / `lattice_hash` (surveyed data). Treat
+a guessable anchor with an empty lattice_hash as UNKEYED. Re-run:
+`python tools/measure_field_entropy.py`
 
 ## Layout
 - core/seed.py      : the unit crossing every layer (120-bit + model_id + epoch + CRC16)
@@ -87,8 +99,12 @@ PYTHONPATH=. python -m integration.demo_failures
 PYTHONPATH=. python tests/test_stack.py
 PYTHONPATH=. python tests/test_legacy.py
 python tools/check_stdlib_only.py
+python tools/measure_field_entropy.py
 
 ## Before adding features
-Read NOTEBOOK.md's open unknowns. U-1 (is the real encoder invertible?)
-and U-6 (how much key material is really in a field survey?) both bear
-on whether the headline claim survives contact with a real deployment.
+Read NOTEBOOK.md's open unknowns and the potential-applications list —
+measurement has already ruled two directions out, and knowing which is
+cheaper than rediscovering them. Currently important: U-8 (`model_id` is
+19 of the seed's 40 wire bytes, which is why it loses to the ecosystem's
+existing 25-byte claim codec) and U-9 (the keyed fold has no strong
+second factor until a real survey's entropy is measured).

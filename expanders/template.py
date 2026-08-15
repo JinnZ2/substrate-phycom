@@ -76,6 +76,15 @@ class TemplateExpander(Expander):
         # Obligation 1: every output-affecting choice goes in the id.
         self.model_id = "template.v1"
 
+    def model_key(self) -> bytes:
+        """Override only if your model holds something genuinely secret.
+        Returning your derived key lets callers key the fold itself
+        (`seed_from_message(key=...)`), which is what gates regime A
+        when the codebook is public. Return b"" if your parameters are
+        public — claiming a secret you do not have is worse than
+        admitting you have none."""
+        return self._mkey
+
     def expand(self, seed: Seed, steps: int) -> List[float]:
         # Obligation 4: steps=0 -> [] falls out of range(0) for free.
         out: List[float] = []
