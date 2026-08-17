@@ -10,33 +10,24 @@ small object.
 
 stdlib only. No deps. Phone-buildable.
 
---- AUDIT FINDINGS ADDRESSED ---
-Finding 1: epoch silently truncated to 16 bits on wire; now enforced
-           at construction so wire-format and expanders always agree.
-Finding 2: seed_from_message concatenation ambiguous — FOLD_FLAT keeps
-           legacy behaviour; FOLD_SAFE (default) length-prefixes the
-           message so (message, model_id) boundaries are unambiguous.
-Finding 8: negative epoch silently wrapped in to_wire and rejected by
-           seed_from_message; now consistently rejected at construction.
-Finding 9: from_wire raised struct.error on short input; now raises
-           ValueError with a clear message before any unpacking.
+Retired mode honoured here: FOLD_FLAT (see legacy/modes.py, F-02).
+Full ledger: NOTEBOOK.md
 """
 
 from __future__ import annotations
 
 import hashlib
+import hmac
 import struct
 from dataclasses import dataclass
-from typing import Tuple
 
+from legacy.modes import FOLD_FLAT
 
 SEED_VERSION = 1
 SEED_PAYLOAD_BYTES = 15       # 120 bits, matches orbital-phycom convention
 WIRE_EPOCH_MAX     = 0xFFFF   # wire packs epoch as 2 bytes; construction rejects outside [0, WIRE_EPOCH_MAX]
 MIN_WIRE_BYTES     = 4 + SEED_PAYLOAD_BYTES + 2  # header + empty model_id + payload + CRC = 21
 
-# seed_from_message fold choices (Finding 2)
-FOLD_FLAT = "flat"  # message + model_id.encode() + pack(epoch) — legacy; ambiguous at boundaries
 FOLD_SAFE = "safe"  # pack(len(message)) + message + model_id.encode() + pack(epoch) — unambiguous
 
 
@@ -51,7 +42,7 @@ class Seed:
     epoch     : integer time anchor in [0, WIRE_EPOCH_MAX]. Keeps expansions
                 deterministic and replay-distinct without clock sync.
                 Constrained to 16 bits so wire-format and expander inputs
-                are always consistent (Finding 1 / Finding 8).
+                are always consistent (F-01 / F-08).
     """
     payload: bytes
     model_id: str
@@ -115,29 +106,53 @@ def seed_from_message(
     epoch: int = 0,
     *,
     fold: str = FOLD_SAFE,
+    key: bytes = b"",
 ) -> "Seed":
     """Deterministically fold an arbitrary message down to a seed.
+
+    key: optional model key, from Expander.model_key(). Empty (default)
+        folds with bare SHA-256 and reproduces every payload this repo
+        has ever minted. Non-empty folds with HMAC instead, so the fold
+        itself requires the shared model.
+
+        Supply it whenever the codebook is not secret. Round 3 measured
+        the alternative: with a public codebook and an unkeyed fold,
+        regime A has NO gate at all — model_id and epoch both ride in
+        the clear, so anyone holding the codebook re-folds every entry
+        and reads the message. The field model was never consulted.
+        (F-16.) Keyed, recovery needs the codebook AND the model.
 
     fold=FOLD_SAFE (default): pack(len(message)) + message + model_id + pack(epoch).
         Unambiguous — different (message, model_id) pairs always produce
         different hash inputs regardless of where the boundary falls.
 
-    fold=FOLD_FLAT: message + model_id.encode() + pack(epoch). Legacy.
-        Ambiguous: seed_from_message(b"ab", "c", e) ==
-                   seed_from_message(b"a", "bc", e). Safe when model_id
-        is a fixed known string (e.g. "orbital.kepler.v1") since no
-        real message will share that boundary, but structurally unsound.
+    fold=FOLD_FLAT: retired. Ambiguous at the message/model_id boundary.
+        See legacy/modes.py, F-02.
 
-    NOTE: this is the lossy/keyed direction. The expander + shared model
-    is what unfolds it back. For a real deployment the fold is the
-    geometric-to-binary encoder; this is the reference fold so the repo
-    runs end-to-end with nothing but stdlib.
+    NOTE — read this before believing the fold round-trips. It does not.
+    This is SHA-256 truncated to 120 bits: one-way and lossy by
+    construction. `expand()` does not hand the message back, and no
+    expander in this repo can. What the shared model actually buys you
+    is one of two regimes, both demonstrated in
+    integration/demo_regenerate.py and written up as F-13 in NOTEBOOK.md:
+
+      A. the message space is shared and enumerable, so the seed
+         SELECTS a message the far end already holds; or
+      B. the expander is used as a physics-keyed pad, and the seed keys
+         the keystream that carries an arbitrary message.
+
+    In a real deployment the fold is the geometric-to-binary encoder,
+    which may be invertible where this one is not. This is the reference
+    fold, so the repo runs end to end on nothing but stdlib.
     """
     mid = model_id.encode("utf-8")
-    epoch_bytes = struct.pack("!H", epoch)   # 16-bit, matching wire format (Finding 1.1)
+    epoch_bytes = struct.pack("!H", epoch)   # 16-bit, matching wire format (F-01)
     if fold == FOLD_SAFE:
         h_input = struct.pack("!I", len(message)) + message + mid + epoch_bytes
     else:  # FOLD_FLAT
         h_input = message + mid + epoch_bytes
-    digest = hashlib.sha256(h_input).digest()
+    if key:
+        digest = hmac.new(key, h_input, hashlib.sha256).digest()
+    else:
+        digest = hashlib.sha256(h_input).digest()
     return Seed(payload=digest[:SEED_PAYLOAD_BYTES], model_id=model_id, epoch=epoch)

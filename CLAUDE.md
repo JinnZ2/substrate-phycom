@@ -10,107 +10,101 @@ expander so the architecture runs with no orbit.
 
 ## Core invariant
 You transmit the SEED, not the message. A shared deterministic physics
-model (the Expander) regenerates the message. The model never crosses the
-wire — it is both the compression and the gate.
+model (the Expander) regenerates it. The model never crosses the wire —
+it is both the compression and the gate.
+
+Stated precisely, because the loose version was tested in round 2 and
+does not survive as written (NOTEBOOK.md F-13). The reference fold is
+SHA-256 truncated to 120 bits: one-way. `expand()` returns floats, and
+nothing here inverts a hash. Two regimes actually move a message:
+
+- **A — shared codebook.** The seed *selects* a message the far end
+  already holds. Seed-only on the wire. **This is the regime that
+  compresses**, and it requires an enumerable shared message space.
+  **Pass `key=expander.model_key()` unless the codebook is secret** —
+  unkeyed it has no gate at all (F-16).
+- **B — physics-keyed pad.** The expander's keystream carries an
+  arbitrary message. Wire carries seed + message-sized ciphertext, so
+  this is secrecy, not compression.
+
+Say which regime you mean.
+
+## What the field model is worth (measured, F-17)
+`expanders/geomagnetic.py` reads as though the field is the secret. It
+is not. Declination/inclination/intensity are published geophysics and
+are not independent — all three are functions of position, so the triple
+is a 2-D manifold. Measured: 186 keys/km², ~2^21 against a county-level
+guess, ~2^35 knowing nothing. **The field is a salt, not a key.** Real
+strength must come from `anchor` / `lattice_hash` (surveyed data). Treat
+a guessable anchor with an empty lattice_hash as UNKEYED. Re-run:
+`python tools/measure_field_entropy.py`
 
 ## Layout
 - core/seed.py      : the unit crossing every layer (120-bit + model_id + epoch + CRC16)
 - core/expander.py  : abstract Expander. Same seed in, deterministic schedule out.
 - expanders/orbital.py     : reference adapter to orbital-phycom (Kepler)
 - expanders/geomagnetic.py : terrestrial field-model expander (the new piece)
-- integration/demo.py      : end-to-end, two carriers, the shared-model gate
-- tests/test_stack.py      : determinism + round-trip + gate
+- expanders/template.py    : copy this to add a carrier; states the four obligations
+- integration/demo.py            : end-to-end, two carriers, the shared-model gate
+- integration/demo_regenerate.py : regimes A and B (F-13)
+- integration/demo_failures.py   : corrupt seed / wrong model_id / wrong params
+- tests/test_stack.py  : determinism + round-trip + gate + the round-2 gaps
+- tests/test_legacy.py : golden vectors + legacy ledger integrity
+- legacy/          : retired modes, still executable. Precedent carries.
+- NOTEBOOK.md      : the ledger — every claim, run, falsification, open unknown
+- tools/           : check_stdlib_only.py enforces the no-deps rule
 
 ## House rules
-- stdlib only. No deps. Must run on a phone.
+- stdlib only. No deps. Must run on a phone. (Enforced: tools/check_stdlib_only.py)
 - CC0. No extraction.
 - Determinism is the contract. Same seed + same model + same epoch = identical output.
-- New carrier? Implement Expander, reuse seed.py + BE2 transports unchanged.
+- New carrier? Copy expanders/template.py. seed.py and BE2 transports stay unchanged.
+- **Anything that changes the output must change the model_id.** A peer
+  who disagrees should be rejected, never silently divergent.
+- **Retire, don't delete.** A superseded mode moves to legacy/modes.py with
+  a RETIRED entry and a golden vector. It never just disappears — a seed
+  minted under it still has to expand.
+- Claims get run, not reasoned about. Record the result in NOTEBOOK.md
+  even when it holds. Never edit a past round to match what you learned later.
+
+## Design choices (constant pairs, default first)
+| Where | Default | Retired |
+|---|---|---|
+| `seed_from_message(fold=)` | `FOLD_SAFE` | `FOLD_FLAT` |
+| `FieldModel(key_version=)` | `KEY_V2` | `KEY_V1` |
+| `lattice_hash_from_axes(version=)` | `LATTICE_V2` | `LATTICE_V1` |
+| `OrbitalExpander(entropy=)` | `ENTROPY_FULL` | `ENTROPY_PARTIAL` |
+| `OrbitalExpander(t_mode=)` | `T_ABSOLUTE` | `T_NORMALIZED` |
+| `Expander.keystream(fold=)` | `KEYSTREAM_SIGNED` | `KEYSTREAM_ABS_MOD` |
+
+Retired values are defined in `legacy/modes.py` and re-exported by the
+module that honours them. `PYTHONPATH=. python -m legacy.modes` prints
+why each was retired and which test killed it.
+
+## What both endpoints must agree on out of band
+Nothing in this list travels on the wire, and a mismatch in any of it
+breaks expansion: the expander class, every model parameter (for
+geomagnetic: `declination_deg`, `inclination_deg`, `intensity_nt`,
+`anchor`, `lattice_hash`, `key_version`), the `fold` used to mint the
+seed, the epoch time base, and — for regime A — the codebook.
+
+`model_id` covers the mode flags only. Same `model_id` with different
+`FieldModel` parameters passes every check and diverges silently; that
+is the gate working, not a bug (`demo_failures.py`, case 3).
 
 ## Run
 PYTHONPATH=. python -m integration.demo
+PYTHONPATH=. python -m integration.demo_regenerate
+PYTHONPATH=. python -m integration.demo_failures
 PYTHONPATH=. python tests/test_stack.py
+PYTHONPATH=. python tests/test_legacy.py
+python tools/check_stdlib_only.py
+python tools/measure_field_entropy.py
 
-
-REVIEW.md — Seed-Expander Connective Layer
-
-Reviewed against CLAUDE.md. This repo is a lightweight, stdlib-only connective layer with a clear deterministic contract. Findings focus on hardening that contract and improving discoverability.
-
----
-
-1. Structural Consistency & Conventions
-
-· Directory layout
-  ✅ Matches documented structure: core/, expanders/, integration/, tests/.
-  ✅ All Python files are snake_case, no violations.
-· Standard library only
-  ⚠️ Verify: Run grep -r "import " core/ expanders/ integration/ and confirm no third-party imports. A CI check (even a simple script) would prevent accidental dependency drift.
-· Determinism contract
-  ✅ The CLAUDE.md states the invariant clearly. The test test_stack.py includes determinism + round-trip + gate tests — good.
-  ❓ Do the tests cover edge cases like different epochs producing different outputs? Are there tests for seed collision handling? Consider adding a test that different seeds produce different outputs and a test for model_id mismatch rejection.
-· CC0 license
-  ❌ CLAUDE.md says CC0, but no LICENSE file is mentioned. Verify that a LICENSE file exists with CC0 text. If missing, add it.
-· Documentation files
-  ❓ README.md not mentioned. Is there a top-level README? If missing, the project is essentially invisible. Even a minimal README with the core invariant and run commands would improve discoverability.
-
----
-
-2. Discoverability & Crawler Optimization
-
-All artifacts are missing based on the CLAUDE.md. Provide ready-to-paste snippets:
-
-· CITATION.cff (absent):
-  ```yaml
-  cff-version: 1.2.0
-  title: "Seed-Expander Connective Layer"
-  authors:
-    - name: "JinnZ2"
-  license: CC0-1.0
-  date-released: 2024-07-07
-  url: "https://github.com/JinnZ2/<repo-name>"
-  ```
-· KEYWORDS.txt (absent):
-  seed-based-communication, deterministic-expansion, physics-model-compression, pluggable-expander, geomagnetic, orbital, stdlib-only, zero-trust-transport
-· Repository topics (absent):
-  seed-expansion, physics-compression, deterministic, zero-trust, orbital-mechanics, geomagnetic, protocol-design, python-stdlib
-· License badge (absent):
-  [![License: CC0-1.0](https://img.shields.io/badge/License-CC0_1.0-lightgrey.svg)](https://creativecommons.org/publicdomain/zero/1.0/)
-· "Why This Matters" statement (missing):
-  Communication without the message ever crossing the wire — a shared physics model that regenerates meaning from a seed. This is compression as a security boundary.
-· One-liner usage example (likely missing in README if no README):
-  PYTHONPATH=. python -m integration.demo is documented, but an importable example would be stronger:
-  ```python
-  from core.seed import Seed
-  from expanders.geomagnetic import GeomagneticExpander
-  s = Seed(data=b"...", model_id="geo", epoch=1)
-  output = GeomagneticExpander().expand(s)
-  ```
-
----
-
-3. Code Audit Highlights
-
-· Determinism: ✅ Tests cover this, but verify that expanders/geomagnetic.py uses no non-deterministic sources (e.g., random, current time). The CLAUDE.md insists on deterministic output from same seed+model+epoch. Ensure the geomagnetic model is purely algorithmic (e.g., based on a fixed field model, no real-time sensor input).
-· Seed integrity: The seed.py seed structure includes a CRC16. Is the CRC correctly computed and checked? Add tests for corrupted seeds (bit flips) being rejected.
-· Expander abstraction: The abstract Expander class in core/expander.py – does it enforce the contract (accepts Seed, returns deterministic schedule)? Use abc.ABC and @abstractmethod to make violations loud.
-· Error handling: The demo and tests likely assume happy path. What happens if a seed has an unsupported model_id? The Expander should raise a clear error, not silently produce garbage.
-· No deps means no deps: The CLAUDE.md says "stdlib only. No deps. Must run on a phone." This is a hard constraint. Verify that not only the production code but also tests/test_stack.py uses only stdlib (no pytest, etc.). If the tests rely on pytest or unittest, that's fine as a dev dependency but the runtime must remain pure. Note: the CLAUDE.md might be okay with unittest as it's stdlib.
-
----
-
-4. Organizational Suggestions
-
-· Missing README: This is the most critical gap. Even a 10-line README with the core invariant, layout, and run commands would make the repo discoverable. Without it, the project is a black box to crawlers and human visitors.
-· Expanders directory: Only two expanders exist. That's fine, but consider adding a template_expander.py or a README explaining how to implement a new one.
-· Integration demo: It's only one file. That's okay, but if the architecture is meant to be demonstrated with multiple carriers or failure modes, a few more demos (e.g., demo_seed_corruption.py, demo_model_mismatch.py) could illustrate the robustness of the gate.
-· Tests location: tests/ is flat. For now, with few files, it's acceptable. If the number of tests grows, mirror the source tree.
-· No CI mentioned: Adding a GitHub Action to run the single test suite would be low-effort and prevent regressions.
-
----
-
-5. Repository Topics Suggestion
-
-Add these GitHub topics:
-seed-expansion, deterministic, physics-compression, protocol-design, zero-trust, pluggable-architecture, python-stdlib, orbital-mechanics, geomagnetic
-
-End of review.
+## Before adding features
+Read NOTEBOOK.md's open unknowns and the potential-applications list —
+measurement has already ruled two directions out, and knowing which is
+cheaper than rediscovering them. Currently important: U-8 (`model_id` is
+19 of the seed's 40 wire bytes, which is why it loses to the ecosystem's
+existing 25-byte claim codec) and U-9 (the keyed fold has no strong
+second factor until a real survey's entropy is measured).
