@@ -109,10 +109,11 @@ cheaper than rediscovering them. Currently important: U-8 (`model_id` is
 existing 25-byte claim codec) and U-9 (the keyed fold has no strong
 second factor until a real survey's entropy is measured).
 
-<!-- clone-refspec-note v1 -->
+<!-- clone-refspec-note v1.1 -->
 ## Cloning and pushing
 Shallow clones are single-branch by default.
-Before pushing any branch other than main, run:
+Before pushing any branch other than the default
+branch, run:
 
     git config remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*'
     git fetch --depth 1
@@ -121,4 +122,4 @@ Or clone with: git clone --depth 1 --no-single-branch <url>
 Without this, the first push of a new branch
 fails the tracking-ref check even when the
 commit landed.
-<!-- /clone-refspec-note v1 -->
+<!-- /clone-refspec-note v1.1 -->
