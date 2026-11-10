@@ -14,7 +14,7 @@ jobs:
       matrix:
         # "Must run on a phone" means it must run on whatever Python is
         # already there. No pinned toolchain, no install step.
-        python: ["3.9", "3.11", "3.13"]
+        python: ["3.10", "3.11", "3.13", "3.x"]
     steps:
       - uses: actions/checkout@v4
 
